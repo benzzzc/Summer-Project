@@ -3,7 +3,7 @@
 % Create 'secret' parameters for the model, will use system ID to find
 % these
 m = 10;  % kg
-b = 5;   % Ns/m
+b = 2;   % Ns/m
 k = 8;   % N/m
 
 % State space representation of the model
@@ -15,7 +15,7 @@ B = [0;
 
 C = [1 0];
 
-D = 0;
+D = [0];
 
 sys_plant = ss(A,B,C,D);
 
@@ -77,24 +77,58 @@ fprintf('Estimated mass: %.4f kg\n', m_est);
 fprintf('Estimated damping: %.4f Ns/m\n', b_est);
 fprintf('Estimated spring constant: %.4f N/m\n', k_est);
 
-%% LQR 
 
-% Get system model from the estimated parameters
-
-m = m_est;
-b = b_est;
-k = k_est;
-
-A = A_est;
-B = B_est;
-
-sys_plant = ss(A,B,C,D);
-
-% Check observability and Controllability
+%% Check observability and Controllability
+sys_plant_ID = ss(A_est,B_est,C,D);
 Co = ctrb(sys_plant);
 c_rank = rank(Co);
 Ob = obsv(sys_plant);
 o_rank = rank(Ob);
+
+%% Plot the open-loop step response
+figure;
+step(sys_plant_ID);
+grid on;
+title('Open-Loop Plant Step Response');
+
+%% Validate system identification model using a differnet input
+
+run_systemID_validation(sys_plant, sys_plant_ID);
+
+%% LQR
+
+% Form the augmented system with augmented state integral error, be careful
+% of the dimensions, There are three states now, also these are matrices
+
+Aa = [A_est [0;0];
+      -C 0];
+
+Ba = [B_est;
+      0];
+
+Ca = [C 0];
+
+sys_aug = ss(Aa, Ba, Ca, []);
+
+% Define the weighting matrices
+
+Q = [4 0 0;
+     0 4 0;
+     0 0 4];
+
+R = [0.5];
+
+N = [0;
+     0;
+     0]; 
+
+% Find the K matrices Kx (for states) and Ki (inegratal control error)
+K = lqr(sys_aug, Q, R, N);
+Kx = K(:, 1:2);
+Ki = K(3);
+
+% Get the closed loop eigen values 
+eig_cl_LQR = eig(Aa - (Ba * K));
 
 
 
