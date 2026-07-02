@@ -108,14 +108,18 @@ Ba = [B_est;
 
 Ca = [C 0];
 
-sys_aug = ss(Aa, Ba, Ca, []);
+sys_OL_aug = ss(Aa, Ba, Ca, 0);
 
 % Define the weighting matrices
+% Use Bryson rule to find the starting point for trail and error, go higher
+% if needed, as it is 1/value^2
 
-Q = [4 0 0;
-     0 4 0;
-     0 0 4];
+% Penalises position, velocity and integral error respectively
+Q = [100 0 0;
+     0 0.25 0;
+     0 0 400];
 
+% Penalises control effort - remember we can only have one control input
 R = [0.5];
 
 N = [0;
@@ -123,12 +127,35 @@ N = [0;
      0]; 
 
 % Find the K matrices Kx (for states) and Ki (inegratal control error)
-K = lqr(sys_aug, Q, R, N);
-Kx = K(:, 1:2);
-Ki = K(3);
+K_LQR = lqr(sys_OL_aug, Q, R, N);
+Kx = K_LQR(:, 1:2);
+Ki = K_LQR(3);
+
+% Construct the state space representation of the augmented system with 
+% closed loop feedback
+
+% A_cl = Aa - (Ba * K);
+A_cl = [A_est - (B_est * Kx), -B_est * Ki;
+        -C,                    0];
+
+% Defines how the reference target enters the system
+Br = [0; 
+      0; 
+      1];
+
+
+sys_CL_aug = ss(A_cl, Br, Ca, 0);
 
 % Get the closed loop eigen values 
-eig_cl_LQR = eig(Aa - (Ba * K));
+eig_cl_LQR = eig(A_cl);
+
+%% Analyse the time and frequency response of the closed loop system
+
+analyse_control(sys_CL_aug);
+
+%% Analysis open loop gain
+
+[GM_LQR, PM_LQR] = analyse_stability_margins(sys_OL_aug, K_LQR);
 
 
 
