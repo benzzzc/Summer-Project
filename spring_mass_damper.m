@@ -157,6 +157,7 @@ eig_cl_LQR = eig(A_cl);
 %% Analyse the LQR controller
 
 time_frequency_response(sys_CL_aug);
+
 % Construct the LQR Open Loop Gain: L(s) = K*(sI - A)^-1*B and plot the
 % bode and nyquist plot
 sys_LQR_loop = ss(Aa, Ba, K_LQR, 0);
@@ -175,7 +176,7 @@ time_frequency_response(sys_CL_hinf);
 sys_hinf_loop = sys_plant_ID * K_hinf; 
 [GM_hinf, PM_hinf] = bode_nyquist(sys_hinf_loop);
 
-% Plot the Sigma Plot (Singular Values)
+% Plot the Sigma Plot for robustness check
 figure('Name', 'H-Infinity Robustness Check', 'Color', 'w');
 sigma(sys_penalty);
 grid on;
