@@ -19,11 +19,12 @@ D = [0];
 
 sys_plant = ss(A,B,C,D);
 
-% Find the natural frequency 
+% Find the natural frequency, critical behaviour 
 wn_rad = sqrt(k/m);
 fn_hz = wn_rad / (2*pi); 
 
-% Set up chirp block param
+% Set up chirp block param, signal sweep allows us to collect the important
+% frequencies
 chirp_f_start = 0.01;        
 chirp_f_target = fn_hz * 5;   
 
@@ -99,6 +100,9 @@ run_systemID_validation(sys_plant, sys_plant_ID);
 
 % Form the augmented system with augmented state integral error, be careful
 % of the dimensions, There are three states now, also these are matrices
+% Limits of the system, actuator limit of 10 N, max transient position
+% error of 0.1m, max velocity of 2ms, penalty on integral error high to
+% ensure that statey state error is addressed as fast as possible 
 
 Aa = [A_est [0;0];
       -C 0];
@@ -120,7 +124,8 @@ Q = [100 0 0;
      0 0 400];
 
 % Penalises control effort - remember we can only have one control input
-R = [0.5];
+% Actuator limit of 10N
+R = [0.01];
 
 N = [0;
      0;
@@ -149,15 +154,35 @@ sys_CL_aug = ss(A_cl, Br, Ca, 0);
 % Get the closed loop eigen values 
 eig_cl_LQR = eig(A_cl);
 
-%% Analyse the time and frequency response of the closed loop system
+%% Analyse the LQR controller
 
-analyse_control(sys_CL_aug);
+time_frequency_response(sys_CL_aug);
+% Construct the LQR Open Loop Gain: L(s) = K*(sI - A)^-1*B and plot the
+% bode and nyquist plot
+sys_LQR_loop = ss(Aa, Ba, K_LQR, 0);
+[GM_LQR, PM_LQR] = bode_nyquist(sys_LQR_loop);
 
-%% Analysis open loop gain
+%% Construct Hinf controller
 
-[GM_LQR, PM_LQR] = analyse_stability_margins(sys_OL_aug, K_LQR);
+[sys_CL_hinf, sys_penalty, K_hinf] = hinf_controller(sys_plant_ID);
 
+%% Analyse the Hinf controller
 
+time_frequency_response(sys_CL_hinf);
+
+% Construct the H-infinity Open Loop Gain: L(s) = P(s)*K(s) and plot the
+% bode and nyquist plot
+sys_hinf_loop = sys_plant_ID * K_hinf; 
+[GM_hinf, PM_hinf] = bode_nyquist(sys_hinf_loop);
+
+% Plot the Sigma Plot (Singular Values)
+figure('Name', 'H-Infinity Robustness Check', 'Color', 'w');
+sigma(sys_penalty);
+grid on;
+
+% Add a reference line at 0 dB (which equals a gain of 1, or Gamma = 1)
+yline(0, 'r--', 'Gamma = 1 (Performance Limit)', 'LineWidth', 2);
+title('Singular Value Plot of Weighted Closed-Loop System');
 
 
 
