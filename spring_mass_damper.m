@@ -1,10 +1,12 @@
 %% Getting the state space model and simulink model 
 
+clear;
+
 % Create 'secret' parameters for the model, will use system ID to find
 % these
-m = 10;  % kg
+m = 1;  % kg
 b = 2;   % Ns/m
-k = 8;   % N/m
+k = 16;   % N/m
 
 % State space representation of the model
 A = [0 1;
@@ -99,10 +101,7 @@ run_systemID_validation(sys_plant, sys_plant_ID);
 %% LQR
 
 % Form the augmented system with augmented state integral error, be careful
-% of the dimensions, There are three states now, also these are matrices
-% Limits of the system, actuator limit of 10 N, max transient position
-% error of 0.1m, max velocity of 2ms, penalty on integral error high to
-% ensure that statey state error is addressed as fast as possible 
+% of the dimensions. 
 
 Aa = [A_est [0;0];
       -C 0];
@@ -124,8 +123,7 @@ Q = [100 0 0;
      0 0 400];
 
 % Penalises control effort - remember we can only have one control input
-% Actuator limit of 10N
-R = [0.01];
+R = [1/(15^2)];
 
 N = [0;
      0;
@@ -149,32 +147,30 @@ Br = [0;
       1];
 
 
-sys_CL_aug = ss(A_cl, Br, Ca, 0);
+sys_CL_LQR = ss(A_cl, Br, Ca, 0);
 
-% Get the closed loop eigen values 
-eig_cl_LQR = eig(A_cl);
 
 %% Analyse the LQR controller
 
-time_frequency_response(sys_CL_aug);
+time_frequency_response(sys_CL_LQR, 'LQR Controller');
 
 % Construct the LQR Open Loop Gain: L(s) = K*(sI - A)^-1*B and plot the
 % bode and nyquist plot
 sys_LQR_loop = ss(Aa, Ba, K_LQR, 0);
-[GM_LQR, PM_LQR] = bode_nyquist(sys_LQR_loop);
+[GM_LQR, PM_LQR] = bode_nyquist(sys_LQR_loop, 'LQR Controller');
 
 %% Construct Hinf controller
 
-[sys_CL_hinf, sys_penalty, K_hinf] = hinf_controller(sys_plant_ID);
+[sys_CL_hinf, sys_penalty, K_hinf, gamma] = hinf_controller(sys_plant_ID);
 
 %% Analyse the Hinf controller
 
-time_frequency_response(sys_CL_hinf);
+time_frequency_response(sys_CL_hinf, 'H infinity Controller');
 
 % Construct the H-infinity Open Loop Gain: L(s) = P(s)*K(s) and plot the
 % bode and nyquist plot
 sys_hinf_loop = sys_plant_ID * K_hinf; 
-[GM_hinf, PM_hinf] = bode_nyquist(sys_hinf_loop);
+[GM_hinf, PM_hinf] = bode_nyquist(sys_hinf_loop, 'H infinity Controller');
 
 % Plot the Sigma Plot for robustness check
 figure('Name', 'H-Infinity Robustness Check', 'Color', 'w');
@@ -185,6 +181,36 @@ grid on;
 yline(0, 'r--', 'Gamma = 1 (Performance Limit)', 'LineWidth', 2);
 title('Singular Value Plot of Weighted Closed-Loop System');
 
+%% --- MPC Generation and Analysis ---
+
+% 1. Create the Controller (Assuming your continuous plant is sys_plant_ID)
+Ts = 0.01;
+my_mpc = create_mpc_controller(sys_plant_ID, Ts);
+
+% 2. Setup the Time-Domain Simulation
+T_sim_seconds = 10;
+T_steps = T_sim_seconds / Ts;  % Number of discrete steps
+target_ref = ones(T_steps, 1); % Step command of 1 meter
+
+% 3. Run the Non-Linear Simulation
+% y_mpc = Position, t_mpc = Time, u_mpc = Motor Force
+[y_mpc, t_mpc, u_mpc] = sim(my_mpc, T_steps, target_ref);
+
+% 4. Plot to verify Constraint Handling
+figure('Name', 'MPC Constraint Handling', 'Color', 'w');
+
+% Position Plot
+subplot(2,1,1);
+plot(t_mpc, y_mpc, 'LineWidth', 2);
+yline(1, 'k--', 'Target');
+grid on; title('MPC: System Position'); xlabel('Time (s)');
+
+% Motor Effort Plot
+subplot(2,1,2);
+plot(t_mpc, u_mpc, 'r', 'LineWidth', 2);
+yline(15, 'k--', 'Max Push (+15 N)', 'Color', 'r');
+yline(-15, 'k--', 'Max Pull (-15 N)', 'Color', 'r');
+grid on; title('MPC: Motor Effort (Notice the clipping!)'); xlabel('Time (s)');
 
 
 
