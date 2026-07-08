@@ -181,36 +181,178 @@ grid on;
 yline(0, 'r--', 'Gamma = 1 (Performance Limit)', 'LineWidth', 2);
 title('Singular Value Plot of Weighted Closed-Loop System');
 
-%% --- MPC Generation and Analysis ---
+%% MPC Synthesis 
 
-% 1. Create the Controller (Assuming your continuous plant is sys_plant_ID)
+% Create the Controller 
 Ts = 0.01;
 my_mpc = create_mpc_controller(sys_plant_ID, Ts);
 
-% 2. Setup the Time-Domain Simulation
-T_sim_seconds = 10;
-T_steps = T_sim_seconds / Ts;  % Number of discrete steps
-target_ref = ones(T_steps, 1); % Step command of 1 meter
+% In command line to test stability, review(my_mpc) does all of the crazy 
+% stuff for you
 
-% 3. Run the Non-Linear Simulation
-% y_mpc = Position, t_mpc = Time, u_mpc = Motor Force
-[y_mpc, t_mpc, u_mpc] = sim(my_mpc, T_steps, target_ref);
+%% 1 Meter reference tracking test
 
-% 4. Plot to verify Constraint Handling
-figure('Name', 'MPC Constraint Handling', 'Color', 'w');
+% Setup Simulation Parameters                             
+t_ref = 0:Ts:5;                           
+r_ref = 0.7 * ones(length(t_ref), 1);  % milply ones by something to change ref         
 
-% Position Plot
+% Simulate the Linear controllers
+
+% Setup reference tracking systems
+% LQR closed loop with input command tracking matrix           
+sys_cl_u_LQR = ss(A_cl, [0; 0; 1], [-Kx, -Ki], 0); 
+
+% H-infinity tracking configuration
+sys_cl_u_hinf = feedback(K_hinf, sys_plant_ID);
+
+% Simulate LQR and H-infinity responses, for both input and output
+[y_lqr_r, ~] = lsim(sys_CL_LQR, r_ref, t_ref);
+[u_lqr_r, ~] = lsim(sys_cl_u_LQR, r_ref, t_ref);
+
+[y_hinf_r, ~] = lsim(sys_CL_hinf, r_ref, t_ref);
+[u_hinf_r, ~] = lsim(sys_cl_u_hinf, r_ref, t_ref);
+
+% Simulate MPC
+
+% Extract discrete system matrices for manual loop
+sys_d = c2d(sys_plant_ID, Ts);
+Ad = sys_d.A; Bd = sys_d.B; Cd = sys_d.C;
+
+x_plant_mpc = [0; 0];               
+xc_mpc = mpcstate(my_mpc); 
+y_mpc_r = zeros(length(t_ref), 1);
+u_mpc_r = zeros(length(t_ref), 1);
+
+for k = 1:length(t_ref)
+    y_mpc_r(k) = Cd * x_plant_mpc;
+    
+    % MPC computes the optimal move keeping constraints in mind
+    u_mpc_r(k) = mpcmove(my_mpc, xc_mpc, y_mpc_r(k), r_ref(k));
+    
+    % Update physical plant
+    x_plant_mpc = Ad * x_plant_mpc + Bd * u_mpc_r(k);
+end
+
+% Plot reference tracking figures
+
+figure('Name', 'Reference Tracking Test Step Response', ...
+    'Color', 'w', 'Position', [100, 100, 900, 750]);
+
+% Top Plot: Position Tracking Performance
 subplot(2,1,1);
-plot(t_mpc, y_mpc, 'LineWidth', 2);
-yline(1, 'k--', 'Target');
-grid on; title('MPC: System Position'); xlabel('Time (s)');
+plot(t_ref, y_lqr_r, 'b', 'LineWidth', 1.5); hold on;
+plot(t_ref, y_hinf_r, 'g', 'LineWidth', 1.5);
+plot(t_ref, y_mpc_r, 'r', 'LineWidth', 2);
+plot(t_ref, r_ref, 'k--', 'LineWidth', 1.2); % Target line
+grid on; 
+title('System Displacement (y): Reference Tracking'); 
+xlabel('Time (s)'); ylabel('Position (m)');
+legend('LQR', 'H-Infinity',  'MPC', 'Target Reference', ...
+    'Location', 'Southeast');
 
-% Motor Effort Plot
+% Bottom Plot: Actuator Force and Saturation Realities
 subplot(2,1,2);
-plot(t_mpc, u_mpc, 'r', 'LineWidth', 2);
-yline(15, 'k--', 'Max Push (+15 N)', 'Color', 'r');
-yline(-15, 'k--', 'Max Pull (-15 N)', 'Color', 'r');
-grid on; title('MPC: Motor Effort (Notice the clipping!)'); xlabel('Time (s)');
+plot(t_ref, u_lqr_r, 'b', 'LineWidth', 1.5); hold on;
+plot(t_ref, u_hinf_r, 'g', 'LineWidth', 1.5);
+plot(t_ref, u_mpc_r, 'r', 'LineWidth', 2);
+yline(15, 'k-', 'Max Motor Limit (+15 N)', 'LineWidth', 1.2);
+yline(-15, 'k-', 'Max Motor Limit (-15 N)', 'LineWidth', 1.2);
+grid on; 
+title('Motor Command (u): Constraint Adherence'); 
+xlabel('Time (s)'); ylabel('Force (N)');
+legend('LQR Demand', 'H-Infinity Demand', 'MPC Response', ...
+    'Limits');
 
+%% Disturbance rejection, high frequency disturbance 
 
+% Setup Simulation Parameters                             
+t_ref = 0:Ts:7;                           
+r_ref = zeros(length(t_ref), 1); 
 
+% Create the Disturbance Signal (Physical input force)
+d_dist = zeros(length(t_ref), 1);
+
+% The Bump: Positive 10N force between 1s and 1.5s (Half-sine wave)
+bump_duration = 0.5;
+bump_idx = (t_ref >= 1) & (t_ref <= 1 + bump_duration);
+d_dist(bump_idx) = 10 * sin(pi * (t_ref(bump_idx) - 1) / bump_duration);
+
+% The Pothole: Negative 10N force between 4s and 4.5s
+pothole_duration = 0.5;
+pothole_idx = (t_ref >= 4) & (t_ref <= 4 + pothole_duration);
+d_dist(pothole_idx) = -10 * sin(pi * (t_ref(pothole_idx) - 4) / pothole_duration);
+
+% Setup LQR for Disturbance
+% Augment B and C matrices because LQR has an integrator state, so that the
+% disturbance only hits the physical states 
+B_dist_LQR = [sys_plant_ID.B; 0];
+C_y_LQR = [sys_plant_ID.C, 0];
+
+% Map disturbance 'd' to output 'y' and motor 'u'
+sys_cl_y_LQR_dist = ss(A_cl, B_dist_LQR, C_y_LQR, 0);
+sys_cl_u_LQR_dist = ss(A_cl, B_dist_LQR, [-Kx, -Ki], 0);
+
+% Simulate LQR Disturbance Rejection
+[y_lqr_dist, ~] = lsim(sys_cl_y_LQR_dist, d_dist, t_ref);
+[u_lqr_dist, ~] = lsim(sys_cl_u_LQR_dist, d_dist, t_ref);
+
+% Setup H-Infinity for Disturbance
+% Block diagram math: Transfer function from Disturbance to Position
+sys_cl_y_hinf_dist = feedback(sys_plant_ID, K_hinf);
+
+% Block diagram math: Transfer function from Disturbance to Motor Command
+sys_cl_u_hinf_dist = -K_hinf * feedback(sys_plant_ID, K_hinf);
+
+% Simulate H-infinity Disturbance Rejection
+[y_hinf_dist, ~] = lsim(sys_cl_y_hinf_dist, d_dist, t_ref);
+[u_hinf_dist, ~] = lsim(sys_cl_u_hinf_dist, d_dist, t_ref);
+
+% Simulate MPC
+sys_d = c2d(sys_plant_ID, Ts);
+Ad = sys_d.A; Bd = sys_d.B; Cd = sys_d.C;
+
+x_plant_mpc = [0; 0];               
+xc_mpc = mpcstate(my_mpc); 
+y_mpc_dist = zeros(length(t_ref), 1);
+u_mpc_dist = zeros(length(t_ref), 1);
+
+for k = 1:length(t_ref)
+    y_mpc_dist(k) = Cd * x_plant_mpc;
+    
+    % MPC computes the optimal move to stay at r_ref(k)
+    u_mpc_dist(k) = mpcmove(my_mpc, xc_mpc, y_mpc_dist(k), r_ref(k));
+    
+    % The physical plant feels BOTH the motor command and the road disturbance
+    x_plant_mpc = Ad * x_plant_mpc + Bd * (u_mpc_dist(k) + d_dist(k));
+end
+
+% Plotting
+figure('Name', 'Disturbance Rejection: Bump and Pothole', 'Color', 'w', 'Position', [100, 50, 900, 900]);
+
+% Subplot 1: Position
+subplot(3,1,1);
+plot(t_ref, y_lqr_dist, 'b', 'LineWidth', 1.5); hold on;
+plot(t_ref, y_hinf_dist, 'g', 'LineWidth', 1.5);
+plot(t_ref, y_mpc_dist, 'r', 'LineWidth', 2);
+yline(0, 'k--', 'Target', 'LineWidth', 1.2); 
+grid on; 
+title('System Displacement (y): Returning to Zero'); 
+legend('LQR', 'H-Infinity', 'MPC', 'Target', 'Location', 'best');
+
+% Subplot 2: Motor Command
+subplot(3,1,2);
+plot(t_ref, u_lqr_dist, 'b', 'LineWidth', 1.5); hold on;
+plot(t_ref, u_hinf_dist, 'g', 'LineWidth', 1.5);
+plot(t_ref, u_mpc_dist, 'r', 'LineWidth', 2);
+yline(15, 'k-', 'Max Motor Limit (+15 N)', 'LineWidth', 1.2);
+yline(-15, 'k-', 'Max Motor Limit (-15 N)', 'LineWidth', 1.2);
+grid on; 
+title('Motor Command (u): Fighting the Disturbance'); 
+legend('LQR Demand', 'H-Infinity Demand', 'MPC Response', 'Upper Limit', 'Lower Limit', 'Location', 'best');
+
+% Subplot 3: Disturbance Profile
+subplot(3,1,3);
+plot(t_ref, d_dist, 'k', 'LineWidth', 1.5);
+grid on; 
+title('External Disturbance Force (d): Bump and Pothole');
+legend('Disturbance Force', 'Location', 'best');
